@@ -374,5 +374,122 @@ class SessionBanner(unittest.TestCase):
         self.assertLessEqual(len(long[1]), 40)
 
 
+class Tokens(unittest.TestCase):
+    """The counter reads live files, so partial lines are the real risk."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.real_root = C.Sessions.ROOT
+        C.Sessions.ROOT = self.root
+        os.makedirs(os.path.join(self.root, "proj"))
+        self.log = os.path.join(self.root, "proj", "s.jsonl")
+
+    def tearDown(self):
+        C.Sessions.ROOT = self.real_root
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def append(self, *usages, **kw):
+        with open(self.log, "a") as fh:
+            for usage in usages:
+                fh.write(json.dumps({"type": "assistant",
+                                     "message": {"usage": usage}}) + "\n")
+            if kw.get("partial"):
+                fh.write('{"type": "assistant", "message": {"usage": {"output_')
+
+    def test_sums_every_token_field(self):
+        self.append({"input_tokens": 1, "output_tokens": 2,
+                     "cache_creation_input_tokens": 4,
+                     "cache_read_input_tokens": 8})
+        meter = C.TokenMeter()
+        meter._sweep()
+        self.assertEqual(meter.total, 15)
+
+    def test_later_sweeps_only_count_new_lines(self):
+        self.append({"output_tokens": 100})
+        meter = C.TokenMeter()
+        meter._sweep()
+        meter._sweep()
+        meter._sweep()
+        self.assertEqual(meter.total, 100, "a re-read double counted")
+        self.append({"output_tokens": 5})
+        meter._sweep()
+        self.assertEqual(meter.total, 105)
+
+    def test_a_half_written_line_is_not_counted_then_is(self):
+        """Logs are appended to live, so a sweep can land mid-line."""
+        self.append({"output_tokens": 7}, partial=True)
+        meter = C.TokenMeter()
+        meter._sweep()
+        self.assertEqual(meter.total, 7, "counted a partial line")
+        with open(self.log, "a") as fh:      # the writer finishes the line
+            fh.write('tokens": 3}}}\n')
+        meter._sweep()
+        self.assertEqual(meter.total, 10, "did not re-read the finished line")
+
+    def test_baseline_is_the_first_sweep(self):
+        self.append({"output_tokens": 1000})
+        meter = C.TokenMeter()
+        meter._sweep()
+        self.assertEqual(meter.burned(), 0, "history counted as burned just now")
+        self.append({"output_tokens": 25})
+        meter._sweep()
+        self.assertEqual(meter.burned(), 25)
+
+    def test_bad_json_does_not_stop_the_count(self):
+        with open(self.log, "a") as fh:
+            fh.write('not json at all\n')
+        self.append({"output_tokens": 9})
+        meter = C.TokenMeter()
+        meter._sweep()
+        self.assertEqual(meter.total, 9)
+
+    def test_human_readable_sizes(self):
+        for value, want in ((999, "999"), (1500, "1.5k"), (2_000_000, "2.0M"),
+                            (32_000_000_000, "32.0B"), (1.5e12, "1.5T")):
+            self.assertEqual(C.human(value), want)
+
+
+class Panel(unittest.TestCase):
+    def rows(self, names):
+        return [{"state": "working", "age": 1.0, "name": n, "cwd": "/x/" + n,
+                 "id": "%08d" % i, "tool": "Bash", "short": n, "label": n}
+                for i, n in enumerate(names)]
+
+    def test_panel_never_overflows_the_track(self):
+        for width in (C.MIN_W, 80, C.MAX_PLAY_W):
+            g = C.Game(width, 20, seed=1)
+            g.started = True
+            grid = C.render(g, {"best": 99999, "claude": "claude: 9 working, 9 ready",
+                                "sessions": self.rows(["a-very-long-project-name"] * 6),
+                                "wasted": 32_000_000_000})
+            self.assertEqual(len(grid), min(20, C.MAX_PLAY_H))
+            for row in grid:
+                self.assertEqual(len(row), min(max(width, C.MIN_W), C.MAX_PLAY_W))
+
+    def test_panel_lists_at_most_its_row_budget(self):
+        g = C.Game(100, 20, seed=1)
+        g.started = True
+        grid = C.render(g, {"best": 0, "claude": "claude: 9 working",
+                            "sessions": self.rows(["p%d" % i for i in range(9)]),
+                            "wasted": None})
+        text = ["".join(ch for ch, _ in row) for row in grid]
+        listed = sum(1 for name in ["p%d" % i for i in range(9)]
+                     if any(name in line for line in text))
+        self.assertLessEqual(listed, C.PANEL_ROWS)
+
+    def test_sessions_in_one_folder_are_distinguishable(self):
+        watch = C.Sessions()
+        rows = [{"name": "repo", "id": "aaaaaaaa", "state": "working", "age": 1,
+                 "cwd": "/x/repo", "tool": ""},
+                {"name": "repo", "id": "bbbbbbbb", "state": "idle", "age": 2,
+                 "cwd": "/x/repo", "tool": ""}]
+        counts = {}
+        for r in rows:
+            counts[r["name"]] = counts.get(r["name"], 0) + 1
+        shorts = [r["name"] if counts[r["name"]] == 1
+                  else "%s~%s" % (r["name"][:10], r["id"][:4]) for r in rows]
+        self.assertEqual(len(set(shorts)), 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

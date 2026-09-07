@@ -15,9 +15,10 @@ import math
 import os
 import random
 import sys
+import threading
 import time
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 def sprite_w(rows):
     return max(len(r) for r in rows)
@@ -106,7 +107,9 @@ CLOUDS = [[" .--.", "(    )"], ["  .-.", " (   )"]]
 STAR_CHARS = ".`'."
 
 (C_DEF, C_DINO, C_OBS, C_GROUND, C_CLOUD,
- C_HUD, C_ACCENT, C_STAR, C_FRAME) = range(9)
+ C_HUD, C_ACCENT, C_STAR, C_FRAME, C_SESSION) = range(10)
+
+PANEL_ROWS = 4            # sessions listed under the summary
 
 # ------------------------------------------------------------------ quips
 # Things Claude says. Kept to ASCII so they render the same everywhere.
@@ -404,6 +407,44 @@ def banner_for(names, width):
     return ["%d sessions done" % len(names), joined]
 
 
+STATE_MARK = {"working": ">", "ready": "-", "idle": ".", "unreadable": "?"}
+
+
+def hud(grid, g, status):
+    """Score on the left, token burn in the middle, sessions on the right."""
+    width = len(grid[0])
+
+    left = "%05d" % int(g.score)
+    if status.get("best"):
+        left += "  best %05d" % status["best"]
+    wasted = status.get("wasted")
+    if wasted is not None and width >= 74:
+        left += "   %s wasted" % human(wasted)
+    blit(grid, [left[:width - 2]], 1, 0, C_HUD)
+
+    label = status.get("claude")
+    if label:
+        if len(left) + len(label) + 4 > width:
+            label = label.replace("claude: ", "")
+        blit(grid, [label[:width - 2]], max(1, width - len(label) - 1), 0, C_ACCENT)
+
+    # One line per live session: marker, folder, and the tool it last called.
+    rows = status.get("sessions") or []
+    if not rows or width < 52:
+        return
+    shown = rows[:PANEL_ROWS]
+    name_w = min(16, max(len(r["short"]) for r in shown))
+    lines = ["%s %-*s %s" % (STATE_MARK.get(r["state"], "?"), name_w,
+                             r["short"][:name_w], r["tool"])
+             for r in shown]
+    panel_w = max(len(l) for l in lines)
+    x = max(1, width - panel_w - 1)
+    for i, line in enumerate(lines):
+        blit(grid, ["\0" * (panel_w + 1)], x - 1, 1 + i, C_DEF)
+        blit(grid, [line], x, 1 + i,
+             C_SESSION if shown[i]["state"] == "working" else C_HUD)
+
+
 def say(grid, text, x, y):
     """A line of Claude, on cleared ground so the scenery cannot show through."""
     width = len(grid[0])
@@ -431,13 +472,7 @@ def render(g, status):
         blit(grid, ob.rows, int(round(ob.x)), g.obstacle_top(ob), C_OBS)
     blit(grid, g.dino_rows(), DINO_X, g.dino_top(), C_DINO)
 
-    blit(grid, ["%05d" % int(g.score)], 1, 0, C_HUD)
-    best = status.get("best", 0)
-    if best:
-        blit(grid, ["best %05d" % best], 8, 0, C_HUD)
-    claude = status.get("claude")
-    if claude:
-        blit(grid, [claude[:g.w - 2]], max(1, g.w - len(claude) - 1), 0, C_ACCENT)
+    hud(grid, g, status)
 
     if g.quip_t > 0 and not g.dead:
         say(grid, g.quip, DINO_X + 2, max(HUD_H + 1, g.dino_top() - 2))
@@ -526,8 +561,10 @@ class Sessions:
                 "name": self._folder(cwd),
                 "cwd": cwd,
                 "id": os.path.basename(path)[:8],
+                "tool": self._last_tool(records),
             })
-        rows.sort(key=lambda r: r["age"])
+        order = {"working": 0, "ready": 1, "idle": 2}
+        rows.sort(key=lambda r: (order.get(r["state"], 3), r["age"]))
 
         # Several sessions often run in one folder, so the folder alone cannot
         # say which terminal to go back to. Add the session id where it is
@@ -536,9 +573,29 @@ class Sessions:
         for row in rows:
             counts[row["name"]] = counts.get(row["name"], 0) + 1
         for row in rows:
-            row["label"] = (row["name"] if counts[row["name"]] == 1
+            duplicated = counts[row["name"]] > 1
+            row["label"] = (row["name"] if not duplicated
                             else "%s (%s)" % (row["name"], row["id"]))
+            # The panel is narrow, so it gets a shorter form of the same idea.
+            row["short"] = (row["name"] if not duplicated
+                            else "%s~%s" % (row["name"][:10], row["id"][:4]))
         return rows
+
+    @staticmethod
+    def _last_tool(records):
+        """Which tool the session called last: its step, roughly.
+
+        Only the tool's name is taken. Its input holds shell commands and file
+        paths, and none of that belongs on a screen someone might screenshot.
+        """
+        for record in reversed(records[-40:]):
+            content = (record.get("message") or {}).get("content")
+            if not isinstance(content, list):
+                continue
+            for block in reversed(content):
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    return str(block.get("name") or "")[:12]
+        return ""
 
     @staticmethod
     def _folder(cwd):
@@ -579,6 +636,89 @@ class Sessions:
         return "claude: " + ", ".join(parts)
 
 
+
+class TokenMeter:
+    """Adds up every token Claude has ever spent, across all sessions.
+
+    The logs are hundreds of megabytes, and a full pass takes about a second,
+    so this runs on a background thread and remembers how far into each file
+    it got. Later sweeps only read what was appended since.
+
+    It reads one field, `message.usage`, and nothing else.
+    """
+
+    FIELDS = ("input_tokens", "output_tokens",
+              "cache_creation_input_tokens", "cache_read_input_tokens")
+    SWEEP = 4.0
+
+    def __init__(self):
+        self.total = 0
+        self.baseline = None        # total when the game started
+        self.ready = False
+        self._offsets = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+
+    def start(self):
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def stop(self):
+        self._stop.set()
+
+    def _loop(self):
+        while True:
+            try:
+                self._sweep()
+            except Exception:       # a counter must never take the game down
+                pass
+            if self._stop.wait(self.SWEEP):
+                return
+
+    def _sweep(self):
+        added = 0
+        for path in glob.glob(os.path.join(Sessions.ROOT, "*", "*.jsonl")):
+            try:
+                size = os.path.getsize(path)
+                start = self._offsets.get(path, 0)
+                if size <= start:
+                    continue
+                with open(path, "rb") as fh:
+                    fh.seek(start)
+                    consumed = start
+                    for raw in fh:          # by line, so a 50 MB file is fine
+                        if not raw.endswith(b"\n"):
+                            break           # a half-written line: read it next time
+                        consumed += len(raw)
+                        if b'"usage"' not in raw:
+                            continue
+                        try:
+                            record = json.loads(raw.decode("utf-8", "replace"))
+                        except ValueError:
+                            continue
+                        usage = (record.get("message") or {}).get("usage") or {}
+                        added += sum(usage.get(k) or 0 for k in self.FIELDS)
+                self._offsets[path] = consumed
+            except OSError:
+                continue
+        with self._lock:
+            self.total += added
+            if self.baseline is None:
+                self.baseline = self.total   # first sweep is all of history
+                self.ready = True
+
+    def burned(self):
+        """Tokens spent since the game started."""
+        with self._lock:
+            return 0 if self.baseline is None else self.total - self.baseline
+
+
+def human(value):
+    for suffix, size in (("T", 1e12), ("B", 1e9), ("M", 1e6), ("k", 1e3)):
+        if value >= size:
+            return "%.1f%s" % (value / size, suffix)
+    return str(int(value))
+
+
 # ------------------------------------------------------------------ scores
 
 def score_path():
@@ -611,7 +751,7 @@ def save_best(best):
 PALETTE_256 = {
     C_DINO: (173, 0), C_OBS: (78, 0), C_GROUND: (137, 0),
     C_CLOUD: (67, 0), C_HUD: (145, 0), C_ACCENT: (212, curses.A_BOLD),
-    C_STAR: (240, 0), C_FRAME: (238, 0),
+    C_STAR: (240, 0), C_FRAME: (238, 0), C_SESSION: (108, 0),
 }
 PALETTE_8 = {
     C_DINO: (curses.COLOR_YELLOW, curses.A_BOLD),
@@ -622,6 +762,7 @@ PALETTE_8 = {
     C_ACCENT: (curses.COLOR_MAGENTA, curses.A_BOLD),
     C_STAR: (curses.COLOR_WHITE, curses.A_DIM),
     C_FRAME: (curses.COLOR_WHITE, curses.A_DIM),
+    C_SESSION: (curses.COLOR_GREEN, 0),
 }
 JUMP_KEYS = (ord(" "), curses.KEY_UP, ord("w"), ord("k"), ord("\n"))
 QUIT_KEYS = (ord("q"), 27)
@@ -692,6 +833,10 @@ def run(stdscr, args):
     h, w = stdscr.getmaxyx()
     game = Game(w - 4, h - 4)
     watch = Sessions() if (not args.no_watch and Sessions.available()) else None
+    meter = None
+    if watch:
+        meter = TokenMeter()
+        meter.start()
     best = load_best()
     last = time.monotonic()
 
@@ -706,6 +851,8 @@ def run(stdscr, args):
                 break
             if key in QUIT_KEYS:
                 save_best(max(best, int(game.score)))
+                if meter:
+                    meter.stop()
                 return
             if key in JUMP_KEYS:
                 if game.dead:
@@ -743,7 +890,10 @@ def run(stdscr, args):
                 pass
             stdscr.refresh()
         else:
-            status = {"best": best, "claude": watch.label() if watch else None}
+            status = {"best": best,
+                      "claude": watch.label() if watch else None,
+                      "sessions": watch.rows if watch else [],
+                      "wasted": meter.total if meter and meter.ready else None}
             draw(stdscr, render(game, status), attrs, h, w)
 
         time.sleep(max(0.0, FRAME - (time.monotonic() - now)))
@@ -777,12 +927,14 @@ def print_sessions():
         print("no Claude sessions in the last 6 hours")
         return
     home = os.path.expanduser("~")
-    print("%-9s %-11s %-34s %s" % ("STATE", "LAST SEEN", "DIRECTORY", "SESSION"))
+    print("%-9s %-11s %-12s %-30s %s"
+          % ("STATE", "LAST SEEN", "LAST TOOL", "DIRECTORY", "SESSION"))
     for r in rows:
         age = r["age"]
         seen = "%.0fs ago" % age if age < 90 else "%.0fm ago" % (age / 60)
-        print("%-9s %-11s %-34s %s"
-              % (r["state"], seen, (r["cwd"] or "?").replace(home, "~")[:34], r["id"]))
+        print("%-9s %-11s %-12s %-30s %s"
+              % (r["state"], seen, r["tool"] or "-",
+                 (r["cwd"] or "?").replace(home, "~")[:30], r["id"]))
     working = sum(1 for r in rows if r["state"] == "working")
     ready = sum(1 for r in rows if r["state"] == "ready")
     print("\n%d session(s): %d working, %d waiting for you"
@@ -807,6 +959,12 @@ def doctor():
     print("high score      %s (%d)" % (score_path(), load_best()))
     print("jump            peak %.1f rows, %.2fs airborne"
           % (JUMP_V ** 2 / (2 * GRAVITY), AIR_TIME))
+    if Sessions.available():
+        meter = TokenMeter()
+        started = time.time()
+        meter._sweep()
+        print("tokens          %s spent across every session (%.1fs to add up)"
+              % (human(meter.total), time.time() - started))
     print()
     print_sessions()
 

@@ -97,15 +97,24 @@ Your best score is kept in `~/.config/claudino/highscore.json`.
 ## The status line
 
 Most people have more than one Claude running at once, so the top right corner
-counts all of them:
+counts them and then lists them:
 
 ```
-claude: 2 working, 1 ready
+                                       claude: 2 working, 1 ready
+                                       > claudino        Bash
+                                       > ai21-aoa-p~bfe4 Edit
+                                       - ai21-aoa-p~5898 Bash
+                                       . other-thing
 ```
 
-- **working** - Claude is running tools or writing
-- **ready** - Claude has finished and is waiting for you
-- **idle** - nothing has happened there for 15 minutes
+- `>` **working** - running tools or writing
+- `-` **ready** - finished, waiting for you
+- `.` **idle** - nothing there for 15 minutes
+
+The last column is the tool that session called most recently, which is a
+decent guess at what it is doing. Several terminals open in one repo is
+normal, so where the folder name repeats it gets the start of the session id
+appended.
 
 When a session finishes, the game flashes and names it, so you know *which*
 terminal to go back to:
@@ -115,23 +124,9 @@ terminal to go back to:
               is done
 ```
 
-If you have several terminals open in the same repo, which is normal, the
-folder name alone is not enough, so the session id is added:
-
-```
-      ai21-aoa-poc (88a63718)
-              is done
-```
-
-If two finish at the same moment, both are named:
-
-```
-          2 sessions done
-   claudino, ai21-aoa-poc (bbbbbbbb)
-```
-
-Sessions that were already waiting when you started the game are not
-announced. They finished before you opened it, so they are not news.
+If two finish at the same moment, both are named. Sessions that were already
+waiting when you started the game are not announced - they finished before you
+opened it, so they are not news.
 
 You can also check from the shell, without starting the game:
 
@@ -140,19 +135,54 @@ claudino --sessions
 ```
 
 ```
-STATE     LAST SEEN   DIRECTORY                          SESSION
-working   11s ago     ~/work/repos/thing                 a44a6540
-ready     15s ago     ~/work/repos/other                 88a63718
-idle      52m ago     ~/scratch                          b7f31693
-
-3 session(s): 1 working, 1 waiting for you
+STATE     LAST SEEN   LAST TOOL    DIRECTORY                      SESSION
+working   3s ago      Bash         ~/claudino                     a44a6540
+ready     3m ago      Edit         ~/work/repos/thing             bfe4dc9e
+idle      46m ago     -            ~/scratch                      b7f31693
 ```
 
-**What it reads.** It opens the logs in `~/.claude/projects/` and looks at
-exactly two things: the `type` of the last few records, and the folder each
-session was started in. It never reads the text of any message, and it never
-writes anything. Run `claudino --no-watch` to switch it off, and it turns
-itself off if you have no Claude sessions.
+## Wasted tokens
+
+The middle of the HUD counts every token Claude has ever spent on this
+machine, across every session:
+
+```
+ 00162  best 00900   32.0B wasted
+```
+
+That number is mostly cache reads. Each turn re-reads the conversation so far,
+so a long session bills the same context over and over. Actual generated
+output is a tiny slice of it - on the machine this was built on, 78.6M of
+output against 31.3B of cache reads.
+
+Adding it up means reading a few hundred megabytes of logs, so it happens on a
+background thread. The first pass takes about a second, and after that each
+sweep reads only the bytes appended since the last one, which is under a
+millisecond. The game never waits for it.
+
+## What it reads
+
+A game that reads your Claude logs should be specific about what it takes.
+It opens the files in `~/.claude/projects/` and reads four things:
+
+| Read | Used for |
+| --- | --- |
+| the `type` of records, and of their content blocks | working / ready / idle |
+| the working directory of each session | the name in the list |
+| the `name` of the last tool called | the last column |
+| `message.usage` token counts | the wasted counter |
+
+It does **not** read the text of any message, and it does **not** read tool
+inputs - those hold shell commands and file paths, and none of that belongs on
+a screen someone might screenshot. It never writes to those files.
+
+To switch the whole thing off:
+
+```sh
+claudino --no-watch
+```
+
+It also turns itself off if you have no Claude sessions.
 
 ## Terminals
 

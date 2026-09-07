@@ -20,6 +20,12 @@ import time
 
 VERSION = "1.4.0"
 
+def track_size(window_w, window_h):
+    """Track size for a window: most of it, with a margin left as border."""
+    return (min(max(window_w - max(4, window_w // 20), MIN_W), MAX_PLAY_W),
+            min(max(window_h - max(4, window_h // 7), MIN_H), MAX_PLAY_H))
+
+
 def sprite_w(rows):
     return max(len(r) for r in rows)
 
@@ -302,9 +308,11 @@ HUD_H = 1
 GROUND_PAD = 2
 MIN_W, MIN_H = 60, 14     # a 9-wide dino needs room; below this the
                           # speed cap would fall under BASE_SPEED
-MAX_PLAY_W, MAX_PLAY_H = 110, 20   # the track is centred, not stretched: a
-                                   # full-screen window otherwise becomes a
-                                   # very long strip of empty desert
+MAX_PLAY_W, MAX_PLAY_H = 220, 26   # Width is useful: more track to look down.
+                                   # Height is not - the dino only jumps about
+                                   # 6 rows, so a very tall track is just empty
+                                   # sky. So the track fills the window's width
+                                   # generously and its height only up to here.
 
 
 def time_above(jump_v, gravity, height):
@@ -383,15 +391,17 @@ class Game:
         order = list(range(len(SKY_LOGOS)))
         self.rng.shuffle(order)
         self.rivals = [[float(self.rng.randrange(self.w // 2, self.w + 30) + i * 70),
-                        HUD_H + 1, order[i]] for i in range(2)]
+                        HUD_H + 1, order[i]]
+                       for i in range(min(len(order), max(2, self.w // 70)))]
         step = max(16, self.w // 3)
         self.clouds = [[float(i * step + self.rng.randrange(0, 10)),
                         self.rng.randrange(HUD_H, sky),
-                        self.rng.randrange(len(CLOUDS))] for i in range(4)]
+                        self.rng.randrange(len(CLOUDS))]
+                       for i in range(max(4, self.w // 32))]
         self.stars = [[float(self.rng.randrange(self.w)),
                        self.rng.randrange(HUD_H, max(HUD_H + 1, self.ground_y - 7)),
                        self.rng.choice(STAR_CHARS)]
-                      for _ in range(max(3, self.w // 14))]
+                      for _ in range(max(4, (self.w * self.h) // 170))]
 
     def say(self, pool, seconds):
         """Pick a line, never the same one twice running."""
@@ -594,14 +604,14 @@ def hud(grid, g, status):
     if not rows or width < 52:
         return
     shown = rows[:PANEL_ROWS]
-    name_w = min(16, max(len(r["name"]) for r in shown))
+    name_w = min(12, max(len(r["name"]) for r in shown))
     tag_w = max([len(r["tag"]) for r in shown] + [0])
     lines = []
     for r in shown:
         parts = [STATE_MARK.get(r["state"], "?"), "%-*s" % (name_w, r["name"][:name_w])]
         if tag_w:
             parts.append("%-*s" % (tag_w, r["tag"]))
-        parts.append(r["tool"])
+        parts.append(r["tool"][:6])
         lines.append(" ".join(parts).rstrip())
     extra = len(rows) - len(shown)
     if extra:
@@ -609,8 +619,9 @@ def hud(grid, g, status):
     panel_w = max(len(l) for l in lines)
     x = max(1, width - panel_w - 1)
     for i, line in enumerate(lines):
+        # Dimmer than before: it sits over the sky and should not shout.
         colour = C_SESSION if (i < len(shown)
-                               and shown[i]["state"] == "working") else C_HUD
+                               and shown[i]["state"] == "working") else C_STAR
         blit(grid, ["\0" * (panel_w + 1)], x - 1, 1 + i, C_DEF)
         blit(grid, [line], x, 1 + i, colour)
 
@@ -1057,10 +1068,16 @@ def run(stdscr, args):
     h, w = stdscr.getmaxyx()
     bests = load_bests()
     choice = args.difficulty or DEFAULT_DIFFICULTY
-    game = Game(w - 4, h - 4, difficulty=choice)
+    game = Game(*track_size(w, h), difficulty=choice)
     hide = set(args.hide or [])
     if not args.show_all:
+        # Both the folder you launched from and the folder the game's own
+        # source lives in. Installed to ~/.local/bin the second matches
+        # nothing, which is harmless; run from a clone it hides the session
+        # that is working on the game.
         hide.add(os.path.basename(os.getcwd().rstrip("/")) or "~")
+        source = os.path.dirname(os.path.realpath(__file__))
+        hide.add(os.path.basename(source.rstrip("/")))
     watch = (Sessions(hide) if (not args.no_watch and Sessions.available()) else None)
     meter = None
     if watch:
@@ -1106,7 +1123,7 @@ def run(stdscr, args):
                 game.reset()          # back to the menu
             elif key == curses.KEY_RESIZE:
                 h, w = stdscr.getmaxyx()
-                game.resize(w - 4, h - 4)
+                game.resize(*track_size(w, h))
 
         if watch:
             watch.poll(now)
@@ -1122,7 +1139,7 @@ def run(stdscr, args):
         nh, nw = stdscr.getmaxyx()
         if (nh, nw) != (h, w):
             h, w = nh, nw
-            game.resize(w - 4, h - 4)
+            game.resize(*track_size(w, h))
 
         if w < MIN_W + 4 or h < MIN_H + 4:
             stdscr.erase()
@@ -1194,7 +1211,7 @@ def doctor():
         size = os.get_terminal_size()
         need = "" if size.columns >= MIN_W + 4 and size.lines >= MIN_H + 4 \
             else "  TOO SMALL, need %dx%d" % (MIN_W + 4, MIN_H + 4)
-        play = Game(size.columns - 4, size.lines - 4)
+        play = Game(*track_size(size.columns, size.lines))
         print("pane            %dx%d%s" % (size.columns, size.lines, need))
         print("track           %dx%d, top speed %.0f cells/s"
               % (play.w, play.h, play.max_speed))

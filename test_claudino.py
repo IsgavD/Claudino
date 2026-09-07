@@ -24,7 +24,7 @@ import claudino as C
 
 MIN_WINDOW_FRAMES = 5      # 250ms: a person must be able to hit it, not just a bot
 MIN_REACTION_S = 1.0       # from an obstacle appearing to the last saving jump
-WIDTHS = (60, 72, 90, 110)   # MIN_W .. MAX_PLAY_W
+WIDTHS = (60, 96, 150, 220)  # MIN_W .. MAX_PLAY_W
 
 
 def speeds_for(width, difficulty):
@@ -56,11 +56,16 @@ def fixed_speed_game(speed, width, height=20, difficulty=C.DEFAULT_DIFFICULTY):
     return g
 
 
-def trial(rows, speed, width, jump_frame, difficulty=C.DEFAULT_DIFFICULTY):
-    """Spawn one obstacle at the edge, jump at `jump_frame`. Did we survive?"""
+RUNWAY = 52     # how far ahead an obstacle is placed for a window measurement
+
+
+def trial(rows, speed, width, jump_frame, difficulty=C.DEFAULT_DIFFICULTY,
+          spawn_at=None):
+    """Spawn one obstacle, jump at `jump_frame`. Did we survive?"""
     g = fixed_speed_game(speed, width, difficulty=difficulty)
-    g.obstacles = [C.Obstacle(rows, width - 1)]
-    limit = int(width / speed / C.FRAME) + 30
+    start = width - 1 if spawn_at is None else min(width - 1, spawn_at)
+    g.obstacles = [C.Obstacle(rows, start)]
+    limit = int((start + 10) / speed / C.FRAME) + 30
     for i in range(limit):
         if i == jump_frame:
             g.jump()
@@ -72,10 +77,21 @@ def trial(rows, speed, width, jump_frame, difficulty=C.DEFAULT_DIFFICULTY):
     return not g.dead
 
 
-def jump_window(rows, speed, width, difficulty=C.DEFAULT_DIFFICULTY):
-    """Longest run of consecutive jump frames that clears the obstacle."""
-    limit = int(width / speed / C.FRAME) + 5
-    ok = [f for f in range(limit) if trial(rows, speed, width, f, difficulty)]
+def jump_window(rows, speed, width, difficulty=C.DEFAULT_DIFFICULTY,
+                spawn_at=RUNWAY):
+    """Longest run of consecutive jump frames that clears the obstacle.
+
+    Placing the obstacle a fixed distance ahead instead of at the pane edge
+    makes this ~5x faster on a wide track and measures 1-3 frames FEWER, never
+    more: the window shifts slightly with where the obstacle's sub-cell
+    position lands. Under-reporting is safe - it only makes the bar stricter.
+    Pass spawn_at=None for the true distance, which the reaction-time test
+    needs because it measures time from the moment an obstacle appears.
+    """
+    start = width - 1 if spawn_at is None else min(width - 1, spawn_at)
+    limit = int((start + 10) / speed / C.FRAME) + 5
+    ok = [f for f in range(limit)
+          if trial(rows, speed, width, f, difficulty, spawn_at)]
     if not ok:
         return [], 0
     best = run = 1
@@ -129,7 +145,8 @@ class Clearable(unittest.TestCase):
             for width in WIDTHS:
                 speed = C.Game(width, 20, difficulty=level).max_speed
                 for i, rows in enumerate(C.OBSTACLES):
-                    frames, _ = jump_window(rows, speed, width, level)
+                    frames, _ = jump_window(rows, speed, width, level,
+                                            spawn_at=None)
                     latest = frames[-1] * C.FRAME
                     self.assertGreaterEqual(
                         latest, MIN_REACTION_S,

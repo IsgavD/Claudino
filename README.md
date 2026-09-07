@@ -156,9 +156,10 @@ counts them and then lists them:
 Idle sessions are not listed and not counted, so the summary above always
 matches the rows below it.
 
-The session in the folder you started the game from is hidden, since that is
-almost always the one sitting next to you and listing it back is just noise.
-Use `--show-all` to keep it, or `--hide FOLDER` to drop others.
+Two folders are hidden by default: the one you started the game from, and the
+one the game's own source lives in. Both are almost always the session sitting
+in the next pane, and listing it back at you is just noise. Use `--show-all`
+to keep them, or `--hide FOLDER` to drop others.
 
 The last column is the tool that session called most recently, which is a
 decent guess at what it is doing. Several terminals open in one repo is
@@ -262,9 +263,11 @@ That swaps in a pure-ASCII approximation with exactly the same dimensions, so
 the game plays identically. Nothing else in the game leaves ASCII: no braille,
 which renders with gaps in Warp, and no emoji, which vary by terminal.
 
-The track is centred and framed rather than stretched to your whole window. A
-full-screen terminal would otherwise turn it into a very long strip of empty
-desert.
+The track fills most of your window and is framed, with a margin left as
+border. It grows generously in width, because more track means more to look
+down, but only up to 26 rows tall - the dino jumps about six rows, so a very
+tall track is just empty sky. On a full-screen terminal you get a wide band
+rather than a square of desert.
 
 If something looks wrong:
 
@@ -291,10 +294,11 @@ could not be cleared at any timing at all. The game was unwinnable, and it did
 not look it.
 
 So `test_claudino.py` brute-forces every obstacle at every speed the game can
-reach, in panes from 60 to 110 columns wide, and checks three things: that a
-jump exists, that its window is at least 250ms so a person and not just a bot
-can hit it, and that you get at least a full second to react. A bot using one
-fixed timing rule then has to survive ten minutes.
+reach, on all three difficulties, in panes from 60 to 220 columns wide, and
+checks three things: that a jump exists, that its window is at least 250ms so
+a person and not just a bot can hit it, and that you get at least a full
+second to react. A bot using one fixed timing rule then has to survive ten
+minutes on each level.
 
 Two consequences are worth knowing:
 

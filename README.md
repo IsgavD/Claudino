@@ -29,25 +29,43 @@ Press space. That is the whole game.
 ## Install
 
 ```sh
-mkdir -p ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/IsgavD/Claudino/main/claudino.py \
-  -o ~/.local/bin/claudino && chmod +x ~/.local/bin/claudino
+curl -fsSL https://raw.githubusercontent.com/IsgavD/Claudino/main/install.sh | sh
 ```
 
-Then just type:
+Then:
 
 ```sh
 claudino
 ```
 
-No `python3` in front of it. If the command is not found, add `~/.local/bin`
-to your `PATH`.
+No account, no login, no sudo, no dependencies. It is one Python file. The
+script finds a folder that is already on your PATH, puts the file there, and
+only creates `~/.local/bin` if it has to - in which case it tells you the one
+line to add to your shell profile.
 
-Do not pipe the install (`curl ... | python3 -`). Piping makes the script
+Python 3.9 or newer, which every Mac already has.
+
+### Or do it by hand
+
+Rather not pipe a script into your shell? Reasonable. It is 70 lines, so read
+it first, or skip it:
+
+```sh
+mkdir -p ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/IsgavD/Claudino/main/claudino.py \
+  -o ~/.local/bin/claudino && chmod 755 ~/.local/bin/claudino
+```
+
+The `mkdir` is needed because macOS does not ship `~/.local/bin`. If that
+folder is not on your PATH, add this to `~/.zshrc`:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Do not pipe the game itself (`curl ... | python3 -`). Piping makes the script
 arrive on standard input, so the game has no terminal to read keys from and
-will not start.
-
-No dependencies. Python 3.9 or newer, which every Mac already has.
+will not start. The installer is fine to pipe; the game is not.
 
 ## Play
 

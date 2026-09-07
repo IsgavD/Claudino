@@ -117,31 +117,26 @@ three levels, which is how that got caught.
 
 ## The competition
 
-Rivals turn up in two places. Overhead, where there is room to draw them:
+Five rivals drift overhead: OpenAI, Gemini, Grok, Meta AI and DeepSeek.
 
 ```
-        █
-       ███
-    ▄▄█████▄▄
-    ▀▀█████▀▀
-       ███
-        █
+      █                    ▄█████ ██▄▄▄
+     ███                  ████████▄███▀
+  ▄▄█████▄▄               █   ▀██████
+  ▀▀█████▀▀               ▀█▄ ▄ ████
+     ███                   ▀██████▀█
+      █
 ```
 
-And as fruit on a cactus, which is an obstacle like any other:
+These are the official SVG marks, rendered at 512 pixels and area-downsampled
+so the thin strokes survive, then checked by eye. Rasterising straight to a
+small size destroys them.
 
-```
-▄██▄
-▀██▀
-  █
-```
-
-Both are the official SVG marks, rasterised and hand-checked, not drawings of
-them. They appear twice because of a hard limit: a logo needs about 13 cells
-across to be recognisable, and an obstacle may not exceed 4. A wider obstacle
-takes longer to pass, which eats the window to jump it. So the fruit is a nod
-carried mostly by its colour, and the sky is where you can actually tell who
-is who.
+They are in the sky for a reason. A mark needs about 13 cells across to be
+recognisable, and an obstacle may not exceed 4 - a wider one takes longer to
+pass, which eats the window to jump it. At four cells every one of these is
+the same indistinguishable blob. So the cacti stay green, and the rivals get
+the one part of the screen with room.
 
 ## The status line
 
@@ -160,6 +155,10 @@ counts them and then lists them:
 
 Idle sessions are not listed and not counted, so the summary above always
 matches the rows below it.
+
+The session in the folder you started the game from is hidden, since that is
+almost always the one sitting next to you and listing it back is just noise.
+Use `--show-all` to keep it, or `--hide FOLDER` to drop others.
 
 The last column is the tool that session called most recently, which is a
 decent guess at what it is doing. Several terminals open in one repo is
@@ -194,11 +193,13 @@ idle      46m ago     -            ~/scratch                      b7f31693
 ## Wasted tokens
 
 The middle of the HUD counts the tokens spent by the sessions that are
-currently alive:
+currently alive, in dimmer type than your score:
 
 ```
- 00162  best 00900   Tokens wasted 6.7B
+ 00162  best 00900   Tokens Wasted (in your Live Sessions) 6.7B
 ```
+
+On a narrow pane it shortens to `Tokens Wasted 6.7B` rather than disappearing.
 
 Only live sessions count. Adding up every log ever written gives a bigger
 number and a meaningless one, since most of it belongs to work finished days

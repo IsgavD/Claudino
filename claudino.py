@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 def sprite_w(rows):
     return max(len(r) for r in rows)
@@ -31,7 +31,7 @@ def mask(rows):
 
 (C_DEF, C_DINO, C_OBS, C_GROUND, C_CLOUD,
  C_HUD, C_ACCENT, C_STAR, C_FRAME, C_SESSION,
- C_RIVAL_A, C_RIVAL_B) = range(12)
+ C_OPENAI, C_GEMINI, C_GROK, C_META, C_DEEPSEEK) = range(15)
 
 PANEL_ROWS = 4            # sessions listed under the summary
 
@@ -78,11 +78,11 @@ DINO_DEAD_PIXELS = [
 # competition: a hexagonal ring and a four-pointed sparkle. At four pixels
 # wide there is no room for the real marks, but the silhouette and the colour
 # are enough to get the joke.
-# The rivals. These are the official SVG marks, rasterised and hand-checked -
-# not drawings of them. A logo needs about 13 cells to be recognisable, and an
-# obstacle may not exceed 4 (a wider one takes longer to pass, which narrows
-# the window to jump it), so they appear twice: readable in the sky, and as a
-# small fruit on a cactus where only the colour really carries the joke.
+# The competition, drifting overhead. These are the official SVG marks,
+# rendered at 512px and area-downsampled so the thin strokes survive, then
+# checked by eye. A mark needs about 13 cells across to be recognisable, which
+# is why they live in the sky: an obstacle may not exceed 4 cells, and at that
+# size every one of them is an indistinguishable blob.
 
 OPENAI_SKY = [
     "    ####     ",
@@ -116,35 +116,62 @@ GEMINI_SKY = [
     "      #      ",
 ]
 
-OPENAI_FRUIT = [
-    " ## ",
-    "####",
-    "####",
-    " ## ",
-    "  # ",
-    "  # ",
+GROK_SKY = [
+    "    #####  # ",
+    "   ###### ## ",
+    "  ##     ### ",
+    "  ##    #### ",
+    "  #    #  ## ",
+    "  #   #   ## ",
+    "  ##      ## ",
+    "  ##     ##  ",
+    "  ## #  ###  ",
+    "  # ######   ",
+    "      ##     ",
+    "             ",
 ]
 
-GEMINI_FRUIT = [
-    "    ",
-    " ## ",
-    " ## ",
-    "    ",
-    "  # ",
-    "  # ",
+META_SKY = [
+    "     ##      ",
+    "    ####     ",
+    " ### ### ### ",
+    "############ ",
+    " ####   #### ",
+    "  ##    ###  ",
+    " ###     ### ",
+    "####     ####",
+    "####     ####",
+    "#####    ### ",
+    "   #######   ",
+    "   #######   ",
+    "   ### ####  ",
+    "   ###  ##   ",
 ]
 
-SKY_LOGOS = [(OPENAI_SKY, C_RIVAL_A), (GEMINI_SKY, C_RIVAL_B)]
+DEEPSEEK_SKY = [
+    "  ##### ##   ",
+    " ###### #####",
+    "######## ####",
+    "############ ",
+    "#   #######  ",
+    "#    ######  ",
+    "##    ####   ",
+    " ## # ####   ",
+    " #########   ",
+    "  ###### #   ",
+]
+
+SKY_LOGOS = [
+    (OPENAI_SKY, C_OPENAI), (GEMINI_SKY, C_GEMINI), (GROK_SKY, C_GROK),
+    (META_SKY, C_META), (DEEPSEEK_SKY, C_DEEPSEEK),
+]
 
 OBSTACLE_SPECS = [
     (["# #", "# #", "###", " # ", " # ", " # "], C_OBS),
     (["# #", "###", " # ", " # ", " # ", " # "], C_OBS),
     (["#  #", "#  #", "####", " ## ", " ## ", " ## "], C_OBS),
     (["#   ", "#  #", "####", " ## ", " ## ", " ## "], C_OBS),
-    (OPENAI_FRUIT, C_RIVAL_A),
-    (GEMINI_FRUIT, C_RIVAL_B),
 ]
-RIVAL_CHANCE = 0.22        # how often a rival turns up instead of a cactus
 
 
 def to_cells(pixels, ascii_mode=False):
@@ -167,7 +194,7 @@ def to_cells(pixels, ascii_mode=False):
 def set_style(ascii_mode):
     """Choose half-block or ASCII sprites. Dimensions are the same either way."""
     global DINO_RUN, DINO_JUMP, DINO_DEAD, OBSTACLES, DINO_W, WIDEST_OBSTACLE
-    global OBSTACLE_COLOURS, PLAIN_CACTI, RIVAL_CACTI
+    global OBSTACLE_COLOURS
     DINO_RUN = [to_cells(DINO_BODY + DINO_LEGS[k], ascii_mode) for k in ("a", "b")]
     DINO_JUMP = to_cells(DINO_BODY + DINO_LEGS["jump"], ascii_mode)
     DINO_DEAD = to_cells(DINO_DEAD_PIXELS, ascii_mode)
@@ -175,8 +202,6 @@ def set_style(ascii_mode):
     global SKY_LOGO_CELLS
     SKY_LOGO_CELLS = [(to_cells(px, ascii_mode), colour) for px, colour in SKY_LOGOS]
     OBSTACLE_COLOURS = [colour for _, colour in OBSTACLE_SPECS]
-    PLAIN_CACTI = [i for i, c in enumerate(OBSTACLE_COLOURS) if c == C_OBS]
-    RIVAL_CACTI = [i for i, c in enumerate(OBSTACLE_COLOURS) if c != C_OBS]
     DINO_W = sprite_w(DINO_RUN[0])
     WIDEST_OBSTACLE = max(sprite_w(o) for o in OBSTACLES)
 
@@ -355,8 +380,10 @@ class Game:
         self.quip = ""
         self.quip_t = 0.0
         sky = max(HUD_H + 1, self.ground_y - 6)
-        self.rivals = [[float(self.rng.randrange(self.w // 2, self.w + 30)),
-                        HUD_H + 1, self.rng.randrange(len(SKY_LOGOS))]]
+        order = list(range(len(SKY_LOGOS)))
+        self.rng.shuffle(order)
+        self.rivals = [[float(self.rng.randrange(self.w // 2, self.w + 30) + i * 70),
+                        HUD_H + 1, order[i]] for i in range(2)]
         step = max(16, self.w // 3)
         self.clouds = [[float(i * step + self.rng.randrange(0, 10)),
                         self.rng.randrange(HUD_H, sky),
@@ -401,9 +428,7 @@ class Game:
         return DINO_RUN[int(self.t * 13) % 2]
 
     def spawn(self):
-        pool = (RIVAL_CACTI if RIVAL_CACTI and self.rng.random() < RIVAL_CHANCE
-                else PLAIN_CACTI)
-        which = self.rng.choice(pool)
+        which = self.rng.randrange(len(OBSTACLES))
         self.obstacles.append(
             Obstacle(OBSTACLES[which], self.w + 1, OBSTACLE_COLOURS[which]))
         # A gap has to cover a whole jump plus time on the ground to react.
@@ -538,19 +563,26 @@ def hud(grid, g, status):
     if status.get("best"):
         left += "  best %05d" % status["best"]
 
-    # Drop the right-hand label to its short form, then the token counter, but
-    # only when they would actually collide. A fixed width threshold hid the
-    # counter on every 80-column terminal, because the track is 4 cells
-    # narrower than the window.
     label = status.get("claude") or ""
     wasted = status.get("wasted")
-    counter = "   Tokens wasted %s" % human(wasted) if wasted is not None else ""
-    if len(left) + len(counter) + len(label) + 4 > width:
+    # Longest form first, then a short one, then nothing. A fixed width
+    # threshold used to hide this on every 80-column terminal, because the
+    # track is 4 cells narrower than the window.
+    forms = []
+    if wasted is not None:
+        forms = ["   Tokens Wasted (in your Live Sessions) %s" % human(wasted),
+                 "   Tokens Wasted %s" % human(wasted), ""]
+    else:
+        forms = [""]
+    if len(left) + len(forms[0]) + len(label) + 4 > width:
         label = label.replace("claude: ", "")
-    if len(left) + len(counter) + len(label) + 4 > width:
-        counter = ""
-    left += counter
+    counter = next((f for f in forms
+                    if len(left) + len(f) + len(label) + 4 <= width), "")
+
     blit(grid, [left[:width - 2]], 1, 0, C_HUD)
+    if counter:
+        # Dimmer than the score: it is background information, not your score.
+        blit(grid, [counter.strip()], 1 + len(left) + 3, 0, C_STAR)
     if label:
         blit(grid, [label[:width - 2]], max(1, width - len(label) - 1), 0, C_ACCENT)
 
@@ -657,7 +689,10 @@ class Sessions:
     RECENT = 6 * 3600
     IDLE_AFTER = 900
 
-    def __init__(self):
+    def __init__(self, hide=()):
+        # The session you launched the game from is almost always the one you
+        # are playing next to, and listing it back at you is just noise.
+        self.hide = {h.lower() for h in hide if h}
         self.rows = []
         self.checked = 0.0
         self.ready = set()
@@ -711,6 +746,8 @@ class Sessions:
             if not records:
                 continue
             cwd = next((r.get("cwd") for r in reversed(records) if r.get("cwd")), "")
+            if self._folder(cwd).lower() in self.hide:
+                continue
             rows.append({
                 "state": self._classify(records, age),
                 "age": age,
@@ -932,7 +969,8 @@ PALETTE_256 = {
     C_DINO: (173, 0), C_OBS: (78, 0), C_GROUND: (137, 0),
     C_CLOUD: (67, 0), C_HUD: (145, 0), C_ACCENT: (212, curses.A_BOLD),
     C_STAR: (240, 0), C_FRAME: (238, 0), C_SESSION: (108, 0),
-    C_RIVAL_A: (252, 0), C_RIVAL_B: (69, 0),
+    C_OPENAI: (251, 0), C_GEMINI: (111, 0), C_GROK: (255, 0),
+    C_META: (141, 0), C_DEEPSEEK: (63, 0),
 }
 PALETTE_8 = {
     C_DINO: (curses.COLOR_YELLOW, curses.A_BOLD),
@@ -944,8 +982,11 @@ PALETTE_8 = {
     C_STAR: (curses.COLOR_WHITE, curses.A_DIM),
     C_FRAME: (curses.COLOR_WHITE, curses.A_DIM),
     C_SESSION: (curses.COLOR_GREEN, 0),
-    C_RIVAL_A: (curses.COLOR_WHITE, curses.A_BOLD),
-    C_RIVAL_B: (curses.COLOR_BLUE, curses.A_BOLD),
+    C_OPENAI: (curses.COLOR_WHITE, 0),
+    C_GEMINI: (curses.COLOR_CYAN, curses.A_BOLD),
+    C_GROK: (curses.COLOR_WHITE, curses.A_BOLD),
+    C_META: (curses.COLOR_MAGENTA, curses.A_BOLD),
+    C_DEEPSEEK: (curses.COLOR_BLUE, curses.A_BOLD),
 }
 JUMP_KEYS = (ord(" "), curses.KEY_UP, ord("w"), ord("k"), ord("\n"))
 QUIT_KEYS = (ord("q"), 27)
@@ -1017,7 +1058,10 @@ def run(stdscr, args):
     bests = load_bests()
     choice = args.difficulty or DEFAULT_DIFFICULTY
     game = Game(w - 4, h - 4, difficulty=choice)
-    watch = Sessions() if (not args.no_watch and Sessions.available()) else None
+    hide = set(args.hide or [])
+    if not args.show_all:
+        hide.add(os.path.basename(os.getcwd().rstrip("/")) or "~")
+    watch = (Sessions(hide) if (not args.no_watch and Sessions.available()) else None)
     meter = None
     if watch:
         meter = TokenMeter()
@@ -1179,6 +1223,10 @@ def main():
     p.add_argument("--sessions", action="store_true",
                    help="list every recent Claude session and exit")
     p.add_argument("--doctor", action="store_true", help="check this terminal and exit")
+    p.add_argument("--hide", action="append", metavar="FOLDER",
+                   help="do not list sessions from this folder (repeatable)")
+    p.add_argument("--show-all", action="store_true",
+                   help="also list the session in the folder you launched from")
     p.add_argument("--difficulty", choices=DIFFICULTY_ORDER,
                    help="skip the menu and start on this level")
     p.add_argument("--ascii", action="store_true",

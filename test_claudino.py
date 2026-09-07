@@ -271,6 +271,33 @@ class Portability(unittest.TestCase):
         g = C.Game(400, 120)
         self.assertEqual((g.w, g.h), (C.MAX_PLAY_W, C.MAX_PLAY_H))
 
+    def test_every_obstacle_is_a_green_cactus(self):
+        """Rivals live in the sky. Nothing on the track pretends to be one."""
+        self.assertTrue(all(c == C.C_OBS for c in C.OBSTACLE_COLOURS))
+
+    def test_every_rival_is_recognisably_sized(self):
+        """A mark under ~13 cells is an unidentifiable blob."""
+        self.assertGreaterEqual(len(C.SKY_LOGOS), 5)
+        for art, colour in C.SKY_LOGO_CELLS:
+            self.assertGreaterEqual(C.sprite_w(art), 11)
+            self.assertGreaterEqual(len(art), 4)
+            self.assertNotEqual(colour, C.C_OBS)
+        colours = [c for _, c in C.SKY_LOGOS]
+        self.assertEqual(len(colours), len(set(colours)), "two rivals share a colour")
+
+    def test_rivals_stay_clear_of_the_ground(self):
+        g = C.Game(100, 20, seed=1)
+        g.started = True
+        tallest = max(len(a) for a, _ in C.SKY_LOGO_CELLS)
+        for _ in range(3000):
+            g.step(C.FRAME)
+            if g.dead:
+                g.reset()
+                g.started = True
+            for _, y, _ in g.rivals:
+                self.assertLess(y + tallest, g.ground_y + 1,
+                                "a rival logo reached the ground")
+
     def test_quips_fit_the_smallest_track(self):
         """A quip wider than the track would be cut off mid-word."""
         longest = max(C.CLEARED_QUIPS + C.DEATH_QUIPS, key=len)
@@ -352,6 +379,19 @@ class SessionBanner(unittest.TestCase):
         self.clock += 2.0
         self.watch.poll(self.clock)
         return self.watch.finished
+
+    def test_a_hidden_folder_is_not_listed(self):
+        """The session you launched from is noise, not news."""
+        self.session("aaaaaaaa", self.HOME + "/work/mine", "working")
+        self.session("bbbbbbbb", self.HOME + "/work/other", "working")
+        self.assertEqual(sorted(r["name"] for r in C.Sessions().scan()),
+                         ["mine", "other"])
+        kept = C.Sessions({"mine"}).scan()
+        self.assertEqual([r["name"] for r in kept], ["other"])
+
+    def test_hiding_is_case_insensitive(self):
+        self.session("aaaaaaaa", self.HOME + "/work/Claudino", "working")
+        self.assertEqual(C.Sessions({"claudino"}).scan(), [])
 
     def test_nothing_is_announced_on_the_first_scan(self):
         """A session that finished before you opened the game is not news."""

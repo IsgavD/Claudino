@@ -3,7 +3,21 @@
 A one-key terminal game to play while Claude Code is thinking.
 You play as Claude. The obstacles are cacti.
 
-Press space. That is the whole game.
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/IsgavD/Claudino/main/install.sh | sh
+```
+
+Then run it:
+
+```sh
+claudino
+```
+
+That is the whole install. No GitHub account, no login, no `sudo`, no
+dependencies - it is a single Python file, and every Mac already has the
+Python it needs.
 
 ```
 | 00104  best 00862                                           claude: 1 working, 3 ready |
@@ -26,26 +40,18 @@ Press space. That is the whole game.
 | .                      .                      .                      .                 |
 ```
 
-## Install
+Press space. That is the whole game.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/IsgavD/Claudino/main/install.sh | sh
-```
+<details>
+<summary>What the installer does, and how to skip it</summary>
 
-Then:
+It finds a folder that is already on your PATH, checks you have Python 3.9 or
+newer, downloads one file, and checks that file parses before putting it in
+place so a half-finished download cannot install a broken game. It only
+creates `~/.local/bin` if it has to, and then tells you the one line to add to
+your shell profile.
 
-```sh
-claudino
-```
-
-No account, no login, no sudo, no dependencies. It is one Python file. The
-script finds a folder that is already on your PATH, puts the file there, and
-only creates `~/.local/bin` if it has to - in which case it tells you the one
-line to add to your shell profile.
-
-Python 3.9 or newer, which every Mac already has.
-
-### Or do it by hand
+#### By hand instead
 
 Rather not pipe a script into your shell? Reasonable. It is 70 lines, so read
 it first, or skip it:
@@ -66,6 +72,8 @@ export PATH="$HOME/.local/bin:$PATH"
 Do not pipe the game itself (`curl ... | python3 -`). Piping makes the script
 arrive on standard input, so the game has no terminal to read keys from and
 will not start. The installer is fine to pipe; the game is not.
+
+</details>
 
 ## Play
 

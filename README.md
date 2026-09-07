@@ -84,7 +84,9 @@ Claude session, so it cannot interrupt it.
 
 | Key | Action |
 | --- | --- |
-| space, up, w, k | jump |
+| space, up, w, k | jump, and choose on the menu |
+| up, down, 1 2 3 | pick a difficulty |
+| d | back to the menu after a game |
 | q | quit |
 
 Claude has opinions about how the jump went. Clear a cactus and you may get
@@ -94,6 +96,53 @@ There are 98 of them.
 
 Your best score is kept in `~/.config/claudino/highscore.json`.
 
+## Difficulty
+
+The game opens on a menu. Up and down to choose, space to run, or skip it with
+`claudino --difficulty hard`. Best scores are kept per level, because
+comparing a hard score with an easy one means nothing.
+
+| | starts at | tops out at | gap between cacti | jump |
+| --- | --- | --- | --- | --- |
+| easy | 22 cells/s | 36 | widest | floatiest, 1.03s |
+| normal | 26 cells/s | 58 | medium | 0.91s |
+| hard | 32 cells/s | 76 | tightest | 0.91s |
+
+Easy has a floatier jump, and that is not decoration. **A slower game is not
+automatically an easier one.** At a lower speed you spend longer inside a
+cactus, so the window to jump it gets *narrower*. Easy's starting speed with
+the normal jump leaves a 3.3-frame window against normal's 5.1 - it would have
+shipped as the hardest setting in the game. The fairness tests run on all
+three levels, which is how that got caught.
+
+## The competition
+
+Rivals turn up in two places. Overhead, where there is room to draw them:
+
+```
+        █
+       ███
+    ▄▄█████▄▄
+    ▀▀█████▀▀
+       ███
+        █
+```
+
+And as fruit on a cactus, which is an obstacle like any other:
+
+```
+▄██▄
+▀██▀
+  █
+```
+
+Both are the official SVG marks, rasterised and hand-checked, not drawings of
+them. They appear twice because of a hard limit: a logo needs about 13 cells
+across to be recognisable, and an obstacle may not exceed 4. A wider obstacle
+takes longer to pass, which eats the window to jump it. So the fruit is a nod
+carried mostly by its colour, and the sky is where you can actually tell who
+is who.
+
 ## The status line
 
 Most people have more than one Claude running at once, so the top right corner
@@ -101,20 +150,21 @@ counts them and then lists them:
 
 ```
                                        claude: 2 working, 1 ready
-                                       > claudino        Bash
-                                       > ai21-aoa-p~bfe4 Edit
-                                       - ai21-aoa-p~5898 Bash
-                                       . other-thing
+                                       > claudino          Bash
+                                       > ai21-aoa-poc bfe4 Edit
+                                       - ai21-aoa-poc 5898 Bash
 ```
 
 - `>` **working** - running tools or writing
 - `-` **ready** - finished, waiting for you
-- `.` **idle** - nothing there for 15 minutes
+
+Idle sessions are not listed and not counted, so the summary above always
+matches the rows below it.
 
 The last column is the tool that session called most recently, which is a
 decent guess at what it is doing. Several terminals open in one repo is
-normal, so where the folder name repeats it gets the start of the session id
-appended.
+normal, so where the folder name repeats the session id gets its own column
+next to the whole folder name.
 
 When a session finishes, the game flashes and names it, so you know *which*
 terminal to go back to:
@@ -143,22 +193,26 @@ idle      46m ago     -            ~/scratch                      b7f31693
 
 ## Wasted tokens
 
-The middle of the HUD counts every token Claude has ever spent on this
-machine, across every session:
+The middle of the HUD counts the tokens spent by the sessions that are
+currently alive:
 
 ```
- 00162  best 00900   32.0B wasted
+ 00162  best 00900   Tokens wasted 6.7B
 ```
+
+Only live sessions count. Adding up every log ever written gives a bigger
+number and a meaningless one, since most of it belongs to work finished days
+ago. When a session goes quiet its total drops back out.
 
 That number is mostly cache reads. Each turn re-reads the conversation so far,
 so a long session bills the same context over and over. Actual generated
 output is a tiny slice of it - on the machine this was built on, 78.6M of
-output against 31.3B of cache reads.
+output against 31.3B of cache reads across all history.
 
-Adding it up means reading a few hundred megabytes of logs, so it happens on a
-background thread. The first pass takes about a second, and after that each
-sweep reads only the bytes appended since the last one, which is under a
-millisecond. The game never waits for it.
+It is still ~185 MB of log, so it happens on a background thread. The first
+pass takes about a quarter of a second, and after that each sweep reads only
+the bytes appended since the last one, which is under a millisecond. Measured
+effect on frame time: worst frame 1.1ms to 3.3ms, against a 50ms budget.
 
 ## What it reads
 

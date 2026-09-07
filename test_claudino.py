@@ -15,6 +15,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,18 +27,19 @@ MIN_REACTION_S = 1.0       # from an obstacle appearing to the last saving jump
 WIDTHS = (60, 72, 90, 110)   # MIN_W .. MAX_PLAY_W
 
 
-def speeds_for(width):
+def speeds_for(width, difficulty):
     """Every speed the game can actually reach in a pane this wide."""
-    top = C.Game(width, 20).max_speed
-    out, s = [], C.BASE_SPEED
+    game = C.Game(width, 20, difficulty=difficulty)
+    top = game.max_speed
+    out, s = [], game.base_speed
     while s < top:
         out.append(round(s, 2))
-        s += 2.0
+        s += 3.0
     out.append(round(top, 2))
     return out
 
 
-def fixed_speed_game(speed, width, height=20):
+def fixed_speed_game(speed, width, height=20, difficulty=C.DEFAULT_DIFFICULTY):
     """A Game pinned to one speed that never spawns, for isolated trials."""
 
     class Fixed(C.Game):
@@ -48,15 +50,15 @@ def fixed_speed_game(speed, width, height=20):
         def spawn(self):
             pass
 
-    g = Fixed(width, height, seed=0)
+    g = Fixed(width, height, seed=0, difficulty=difficulty)
     g.started = True
     g.clouds = []
     return g
 
 
-def trial(rows, speed, width, jump_frame):
+def trial(rows, speed, width, jump_frame, difficulty=C.DEFAULT_DIFFICULTY):
     """Spawn one obstacle at the edge, jump at `jump_frame`. Did we survive?"""
-    g = fixed_speed_game(speed, width)
+    g = fixed_speed_game(speed, width, difficulty=difficulty)
     g.obstacles = [C.Obstacle(rows, width - 1)]
     limit = int(width / speed / C.FRAME) + 30
     for i in range(limit):
@@ -70,10 +72,10 @@ def trial(rows, speed, width, jump_frame):
     return not g.dead
 
 
-def jump_window(rows, speed, width):
+def jump_window(rows, speed, width, difficulty=C.DEFAULT_DIFFICULTY):
     """Longest run of consecutive jump frames that clears the obstacle."""
     limit = int(width / speed / C.FRAME) + 5
-    ok = [f for f in range(limit) if trial(rows, speed, width, f)]
+    ok = [f for f in range(limit) if trial(rows, speed, width, f, difficulty)]
     if not ok:
         return [], 0
     best = run = 1
@@ -91,45 +93,64 @@ def jump_window(rows, speed, width):
 class Clearable(unittest.TestCase):
     def test_every_obstacle_is_clearable(self):
         """No obstacle may be impossible at any reachable speed."""
-        for width in WIDTHS:
-            for speed in speeds_for(width):
-                for i, rows in enumerate(C.OBSTACLES):
-                    _, size = jump_window(rows, speed, width)
-                    self.assertGreater(
-                        size, 0,
-                        "obstacle %d (%d wide, %d tall) is unclearable at "
-                        "speed %.1f in a %d-wide pane"
-                        % (i, C.sprite_w(rows), len(rows), speed, width))
+        for level in C.DIFFICULTY_ORDER:
+            for width in WIDTHS:
+                for speed in speeds_for(width, level):
+                    for i, rows in enumerate(C.OBSTACLES):
+                        _, size = jump_window(rows, speed, width, level)
+                        self.assertGreater(
+                            size, 0,
+                            "on %s, obstacle %d (%d wide) is unclearable at "
+                            "speed %.1f in a %d-wide pane"
+                            % (level, i, C.sprite_w(rows), speed, width))
 
     def test_jump_window_is_humane(self):
-        """A person needs a real window, not a single perfect frame."""
-        for width in WIDTHS:
-            for speed in speeds_for(width):
-                for i, rows in enumerate(C.OBSTACLES):
-                    _, size = jump_window(rows, speed, width)
-                    self.assertGreaterEqual(
-                        size, MIN_WINDOW_FRAMES,
-                        "obstacle %d at speed %.1f in a %d-wide pane has only "
-                        "%d good frames (%.0fms), need %d"
-                        % (i, speed, width, size, size * C.FRAME * 1000,
-                           MIN_WINDOW_FRAMES))
+        """A person needs a real window on every difficulty, not just normal.
+
+        This is the test that stops 'easy' being harder than normal: a slower
+        game leaves you inside a cactus for longer, so a lower speed narrows
+        the window unless the jump gets floatier to match.
+        """
+        for level in C.DIFFICULTY_ORDER:
+            for width in WIDTHS:
+                for speed in speeds_for(width, level):
+                    for i, rows in enumerate(C.OBSTACLES):
+                        _, size = jump_window(rows, speed, width, level)
+                        self.assertGreaterEqual(
+                            size, MIN_WINDOW_FRAMES,
+                            "on %s, obstacle %d at speed %.1f in a %d-wide "
+                            "pane has only %d good frames (%.0fms), need %d"
+                            % (level, i, speed, width, size,
+                               size * C.FRAME * 1000, MIN_WINDOW_FRAMES))
 
     def test_reaction_time_is_sufficient(self):
         """You must have time to see it before the last jump that saves you."""
-        for width in WIDTHS:
-            speed = C.Game(width, 20).max_speed
-            for i, rows in enumerate(C.OBSTACLES):
-                frames, _ = jump_window(rows, speed, width)
-                latest = frames[-1] * C.FRAME
-                self.assertGreaterEqual(
-                    latest, MIN_REACTION_S,
-                    "obstacle %d in a %d-wide pane at top speed %.1f gives only "
-                    "%.2fs to react, need %.2fs"
-                    % (i, width, speed, latest, MIN_REACTION_S))
+        for level in C.DIFFICULTY_ORDER:
+            for width in WIDTHS:
+                speed = C.Game(width, 20, difficulty=level).max_speed
+                for i, rows in enumerate(C.OBSTACLES):
+                    frames, _ = jump_window(rows, speed, width, level)
+                    latest = frames[-1] * C.FRAME
+                    self.assertGreaterEqual(
+                        latest, MIN_REACTION_S,
+                        "on %s, obstacle %d in a %d-wide pane at top speed "
+                        "%.1f gives only %.2fs to react, need %.2fs"
+                        % (level, i, width, speed, latest, MIN_REACTION_S))
+
+    def test_harder_really_is_faster_and_busier(self):
+        """The labels have to mean something."""
+        games = [C.Game(100, 20, difficulty=d) for d in C.DIFFICULTY_ORDER]
+        starts = [g.base_speed for g in games]
+        tops = [g.max_speed for g in games]
+        gaps = [g.reaction_gap for g in games]
+        self.assertEqual(starts, sorted(starts), "start speed not increasing")
+        self.assertEqual(tops, sorted(tops), "top speed not increasing")
+        self.assertEqual(gaps, sorted(gaps, reverse=True), "gaps not shrinking")
 
 
 class Playable(unittest.TestCase):
-    def _bot_survives(self, seed, seconds, width=80):
+    def _bot_survives(self, seed, seconds, width=80,
+                      difficulty=C.DEFAULT_DIFFICULTY):
         """Plays the way a person does: time the top of the jump to the cactus.
 
         A jump reaches its peak JUMP_V/GRAVITY seconds after take-off, so jump
@@ -139,8 +160,8 @@ class Playable(unittest.TestCase):
         because a greedy search can strand itself and that says nothing about
         whether the game is fair.
         """
-        apex = C.JUMP_V / C.GRAVITY
-        g = C.Game(width, 20, seed=seed)
+        g = C.Game(width, 20, seed=seed, difficulty=difficulty)
+        apex = g.jump_v / g.gravity
         g.started = True
         for _ in range(int(seconds / C.FRAME)):
             if not g.airborne and g.obstacles:
@@ -154,8 +175,10 @@ class Playable(unittest.TestCase):
         return True, g.score, "survived"
 
     def test_perfect_play_survives_ten_minutes(self):
-        ok, score, why = self._bot_survives(seed=1, seconds=600)
-        self.assertTrue(ok, "bot failed at score %d: %s" % (score, why))
+        for level in C.DIFFICULTY_ORDER:
+            ok, score, why = self._bot_survives(seed=1, seconds=600,
+                                                difficulty=level)
+            self.assertTrue(ok, "%s failed at score %d: %s" % (level, score, why))
 
     def test_perfect_play_survives_many_seeds(self):
         for seed in range(20):
@@ -265,7 +288,7 @@ class Portability(unittest.TestCase):
         """The quip fires on the pass, not on every frame after it."""
         g = C.Game(80, 20, seed=1)
         g.started = True
-        apex = C.JUMP_V / C.GRAVITY
+        apex = g.jump_v / g.gravity
         for _ in range(1200):
             if not g.airborne and g.obstacles:
                 near = min(g.obstacles, key=lambda o: o.x)
@@ -426,14 +449,16 @@ class Tokens(unittest.TestCase):
         meter._sweep()
         self.assertEqual(meter.total, 10, "did not re-read the finished line")
 
-    def test_baseline_is_the_first_sweep(self):
+    def test_a_session_going_quiet_drops_out_of_the_total(self):
+        """The counter is about live sessions, not about all of history."""
         self.append({"output_tokens": 1000})
         meter = C.TokenMeter()
         meter._sweep()
-        self.assertEqual(meter.burned(), 0, "history counted as burned just now")
-        self.append({"output_tokens": 25})
+        self.assertEqual(meter.total, 1000)
+        old = time.time() - C.Sessions.RECENT - 60
+        os.utime(self.log, (old, old))
         meter._sweep()
-        self.assertEqual(meter.burned(), 25)
+        self.assertEqual(meter.total, 0, "a stale session still counted")
 
     def test_bad_json_does_not_stop_the_count(self):
         with open(self.log, "a") as fh:
@@ -452,7 +477,7 @@ class Tokens(unittest.TestCase):
 class Panel(unittest.TestCase):
     def rows(self, names):
         return [{"state": "working", "age": 1.0, "name": n, "cwd": "/x/" + n,
-                 "id": "%08d" % i, "tool": "Bash", "short": n, "label": n}
+                 "id": "%08d" % i, "tool": "Bash", "tag": "", "label": n}
                 for i, n in enumerate(names)]
 
     def test_panel_never_overflows_the_track(self):
@@ -476,6 +501,22 @@ class Panel(unittest.TestCase):
         listed = sum(1 for name in ["p%d" % i for i in range(9)]
                      if any(name in line for line in text))
         self.assertLessEqual(listed, C.PANEL_ROWS)
+
+    def test_only_actionable_sessions_are_listed(self):
+        """The count above the list must match the rows in it."""
+        rows = self.rows(["a", "b"])
+        rows[1]["state"] = "ready"
+        rows += [dict(r, state="idle") for r in self.rows(["c", "d"])]
+        g = C.Game(100, 20, seed=1)
+        g.started = True
+        text = ["".join(ch for ch, _ in row)
+                for row in C.render(g, {"best": 0, "claude": "claude: 1 working, 1 ready",
+                                        "sessions": rows, "wasted": None})]
+        joined = "\n".join(text)
+        self.assertIn(" a ", joined)
+        self.assertIn(" b ", joined)
+        for idle in ("c", "d"):
+            self.assertNotIn(" %s " % idle, joined, "an idle session was listed")
 
     def test_sessions_in_one_folder_are_distinguishable(self):
         watch = C.Sessions()

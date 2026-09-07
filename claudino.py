@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 def sprite_w(rows):
     return max(len(r) for r in rows)
@@ -27,6 +27,13 @@ def sprite_w(rows):
 def mask(rows):
     """Solid cells of a sprite, as (dx, dy) offsets."""
     return {(x, y) for y, r in enumerate(rows) for x, ch in enumerate(r) if ch != " "}
+
+
+(C_DEF, C_DINO, C_OBS, C_GROUND, C_CLOUD,
+ C_HUD, C_ACCENT, C_STAR, C_FRAME, C_SESSION,
+ C_RIVAL_A, C_RIVAL_B) = range(12)
+
+PANEL_ROWS = 4            # sessions listed under the summary
 
 
 # ------------------------------------------------------------------ sprites
@@ -67,12 +74,77 @@ DINO_DEAD_PIXELS = [
     "# ##### #", "#########", "#########", " ####### ",
     "##     ##", "##     ##", "#       #", "#       #",
 ]
-OBSTACLE_PIXELS = [
-    ["# #", "# #", "###", " # ", " # ", " # "],
-    ["# #", "###", " # ", " # ", " # ", " # "],
-    ["#  #", "#  #", "####", " ## ", " ## ", " ## "],
-    [" ## ", " ## ", "####", "####", " ## ", " ## "],
+# Obstacles, each with the colour it is drawn in. The last two are the
+# competition: a hexagonal ring and a four-pointed sparkle. At four pixels
+# wide there is no room for the real marks, but the silhouette and the colour
+# are enough to get the joke.
+# The rivals. These are the official SVG marks, rasterised and hand-checked -
+# not drawings of them. A logo needs about 13 cells to be recognisable, and an
+# obstacle may not exceed 4 (a wider one takes longer to pass, which narrows
+# the window to jump it), so they appear twice: readable in the sky, and as a
+# small fruit on a cactus where only the colour really carries the joke.
+
+OPENAI_SKY = [
+    "    ####     ",
+    "   #   ####  ",
+    "  ##  ##  ## ",
+    " ##  #  #  # ",
+    "# # # ## ### ",
+    "# # ## #  ## ",
+    "# # #   ## ##",
+    "## ##   # # #",
+    " ##  # ## # #",
+    " ### ## # # #",
+    " #  #  #  ## ",
+    " ##  ##  ##  ",
+    "  ####   #   ",
+    "     ####    ",
 ]
+
+GEMINI_SKY = [
+    "      #      ",
+    "      #      ",
+    "     ###     ",
+    "     ###     ",
+    "    #####    ",
+    "  #########  ",
+    "  #########  ",
+    "    #####    ",
+    "     ###     ",
+    "     ###     ",
+    "      #      ",
+    "      #      ",
+]
+
+OPENAI_FRUIT = [
+    " ## ",
+    "####",
+    "####",
+    " ## ",
+    "  # ",
+    "  # ",
+]
+
+GEMINI_FRUIT = [
+    "    ",
+    " ## ",
+    " ## ",
+    "    ",
+    "  # ",
+    "  # ",
+]
+
+SKY_LOGOS = [(OPENAI_SKY, C_RIVAL_A), (GEMINI_SKY, C_RIVAL_B)]
+
+OBSTACLE_SPECS = [
+    (["# #", "# #", "###", " # ", " # ", " # "], C_OBS),
+    (["# #", "###", " # ", " # ", " # ", " # "], C_OBS),
+    (["#  #", "#  #", "####", " ## ", " ## ", " ## "], C_OBS),
+    (["#   ", "#  #", "####", " ## ", " ## ", " ## "], C_OBS),
+    (OPENAI_FRUIT, C_RIVAL_A),
+    (GEMINI_FRUIT, C_RIVAL_B),
+]
+RIVAL_CHANCE = 0.22        # how often a rival turns up instead of a cactus
 
 
 def to_cells(pixels, ascii_mode=False):
@@ -95,10 +167,16 @@ def to_cells(pixels, ascii_mode=False):
 def set_style(ascii_mode):
     """Choose half-block or ASCII sprites. Dimensions are the same either way."""
     global DINO_RUN, DINO_JUMP, DINO_DEAD, OBSTACLES, DINO_W, WIDEST_OBSTACLE
+    global OBSTACLE_COLOURS, PLAIN_CACTI, RIVAL_CACTI
     DINO_RUN = [to_cells(DINO_BODY + DINO_LEGS[k], ascii_mode) for k in ("a", "b")]
     DINO_JUMP = to_cells(DINO_BODY + DINO_LEGS["jump"], ascii_mode)
     DINO_DEAD = to_cells(DINO_DEAD_PIXELS, ascii_mode)
-    OBSTACLES = [to_cells(o, ascii_mode) for o in OBSTACLE_PIXELS]
+    OBSTACLES = [to_cells(px, ascii_mode) for px, _ in OBSTACLE_SPECS]
+    global SKY_LOGO_CELLS
+    SKY_LOGO_CELLS = [(to_cells(px, ascii_mode), colour) for px, colour in SKY_LOGOS]
+    OBSTACLE_COLOURS = [colour for _, colour in OBSTACLE_SPECS]
+    PLAIN_CACTI = [i for i, c in enumerate(OBSTACLE_COLOURS) if c == C_OBS]
+    RIVAL_CACTI = [i for i, c in enumerate(OBSTACLE_COLOURS) if c != C_OBS]
     DINO_W = sprite_w(DINO_RUN[0])
     WIDEST_OBSTACLE = max(sprite_w(o) for o in OBSTACLES)
 
@@ -106,10 +184,6 @@ def set_style(ascii_mode):
 CLOUDS = [[" .--.", "(    )"], ["  .-.", " (   )"]]
 STAR_CHARS = ".`'."
 
-(C_DEF, C_DINO, C_OBS, C_GROUND, C_CLOUD,
- C_HUD, C_ACCENT, C_STAR, C_FRAME, C_SESSION) = range(10)
-
-PANEL_ROWS = 4            # sessions listed under the summary
 
 # ------------------------------------------------------------------ quips
 # Things Claude says. Kept to ASCII so they render the same everywhere.
@@ -173,16 +247,29 @@ DEATH_QUIPS = [
 # Note this gets EASIER as speed rises, because the overlap shrinks.
 # Difficulty here is a reaction-time problem, which is the fun kind.
 
-GRAVITY = 64.0
-JUMP_V = 29.0
-BASE_SPEED = 26.0
-SPEED_CAP = 58.0
+# Difficulty is four knobs, and one of them is not obvious. A slower game is
+# not automatically an easier one: at a lower speed you spend LONGER inside a
+# cactus, so the window to jump it gets narrower. Easy therefore also gets a
+# floatier jump. With the normal jump, easy's starting speed would leave a
+# 3.3-frame window against normal's 5.1 - harder, not easier.
+
+DIFFICULTIES = {
+    "easy":   {"jump_v": 32.0, "gravity": 62.0, "base_speed": 22.0,
+               "speed_cap": 36.0, "ramp": 170.0, "reaction_gap": 0.70},
+    "normal": {"jump_v": 29.0, "gravity": 64.0, "base_speed": 26.0,
+               "speed_cap": 58.0, "ramp": 70.0, "reaction_gap": 0.42},
+    "hard":   {"jump_v": 29.0, "gravity": 64.0, "base_speed": 32.0,
+               "speed_cap": 76.0, "ramp": 40.0, "reaction_gap": 0.24},
+}
+DIFFICULTY_ORDER = ("easy", "normal", "hard")
+DEFAULT_DIFFICULTY = "normal"
+
 MIN_CROSSING_TIME = 1.55  # an obstacle must take this long to cross the pane.
                           # You have to be at the top of the jump when it
                           # arrives, so the last saving jump is half an air
                           # time before impact: this must exceed the reaction
-                          # budget by that much.
-REACTION_GAP = 0.42       # seconds on the ground between two obstacles
+                          # budget by that much. It is a floor for every
+                          # difficulty, so even hard cannot outrun you.
 FRAME = 0.05
 
 DINO_X = 5
@@ -195,25 +282,25 @@ MAX_PLAY_W, MAX_PLAY_H = 110, 20   # the track is centred, not stretched: a
                                    # very long strip of empty desert
 
 
-def time_above(height):
+def time_above(jump_v, gravity, height):
     """Seconds the dino spends with its feet above `height` rows."""
-    d = JUMP_V * JUMP_V - 2.0 * GRAVITY * height
-    return 2.0 * math.sqrt(d) / GRAVITY if d > 0 else 0.0
+    d = jump_v * jump_v - 2.0 * gravity * height
+    return 2.0 * math.sqrt(d) / gravity if d > 0 else 0.0
 
 
-AIR_TIME = 2.0 * JUMP_V / GRAVITY
 set_style(False)
 
 
 # ------------------------------------------------------------------ model
 
 class Obstacle:
-    __slots__ = ("rows", "x", "scored")
+    __slots__ = ("rows", "x", "scored", "colour")
 
-    def __init__(self, rows, x):
+    def __init__(self, rows, x, colour=None):
         self.rows = rows
         self.x = float(x)
         self.scored = False
+        self.colour = C_OBS if colour is None else colour
 
     @property
     def w(self):
@@ -227,10 +314,25 @@ class Obstacle:
 class Game:
     """The whole simulation. No curses in here, so it can be tested headless."""
 
-    def __init__(self, w=80, h=20, seed=None):
+    def __init__(self, w=80, h=20, seed=None, difficulty=DEFAULT_DIFFICULTY):
         self.rng = random.Random(seed)
+        self.set_difficulty(difficulty)
         self.resize(w, h)
         self.reset()
+
+    def set_difficulty(self, name):
+        self.difficulty = name
+        tuning = DIFFICULTIES[name]
+        self.jump_v = tuning["jump_v"]
+        self.gravity = tuning["gravity"]
+        self.base_speed = tuning["base_speed"]
+        self.speed_cap = tuning["speed_cap"]
+        self.ramp = tuning["ramp"]
+        self.reaction_gap = tuning["reaction_gap"]
+
+    @property
+    def air_time(self):
+        return 2.0 * self.jump_v / self.gravity
 
     def resize(self, w, h):
         self.w = min(max(w, MIN_W), MAX_PLAY_W)
@@ -253,6 +355,8 @@ class Game:
         self.quip = ""
         self.quip_t = 0.0
         sky = max(HUD_H + 1, self.ground_y - 6)
+        self.rivals = [[float(self.rng.randrange(self.w // 2, self.w + 30)),
+                        HUD_H + 1, self.rng.randrange(len(SKY_LOGOS))]]
         step = max(16, self.w // 3)
         self.clouds = [[float(i * step + self.rng.randrange(0, 10)),
                         self.rng.randrange(HUD_H, sky),
@@ -272,11 +376,11 @@ class Game:
     @property
     def max_speed(self):
         """Never let an obstacle cross the pane faster than a person can react."""
-        return min(SPEED_CAP, (self.w - DINO_X) / MIN_CROSSING_TIME)
+        return min(self.speed_cap, (self.w - DINO_X) / MIN_CROSSING_TIME)
 
     @property
     def speed(self):
-        return min(self.max_speed, BASE_SPEED + self.score / 70.0)
+        return min(self.max_speed, self.base_speed + self.score / self.ramp)
 
     @property
     def airborne(self):
@@ -287,7 +391,7 @@ class Game:
             return
         self.started = True
         if not self.airborne:
-            self.vy = JUMP_V
+            self.vy = self.jump_v
 
     def dino_rows(self):
         if self.dead:
@@ -297,9 +401,13 @@ class Game:
         return DINO_RUN[int(self.t * 13) % 2]
 
     def spawn(self):
-        self.obstacles.append(Obstacle(self.rng.choice(OBSTACLES), self.w + 1))
+        pool = (RIVAL_CACTI if RIVAL_CACTI and self.rng.random() < RIVAL_CHANCE
+                else PLAIN_CACTI)
+        which = self.rng.choice(pool)
+        self.obstacles.append(
+            Obstacle(OBSTACLES[which], self.w + 1, OBSTACLE_COLOURS[which]))
         # A gap has to cover a whole jump plus time on the ground to react.
-        floor = self.speed * (AIR_TIME + REACTION_GAP) + WIDEST_OBSTACLE
+        floor = self.speed * (self.air_time + self.reaction_gap) + WIDEST_OBSTACLE
         self.next_gap = max(floor, self.rng.uniform(floor, floor + 18))
 
     def step(self, dt):
@@ -313,7 +421,7 @@ class Game:
         move = self.speed * dt
         self.dist += move
 
-        self.vy -= GRAVITY * dt
+        self.vy -= self.gravity * dt
         self.dy = max(0.0, self.dy + self.vy * dt)
         if self.dy == 0.0:
             self.vy = 0.0
@@ -332,11 +440,23 @@ class Game:
             self.spawn()
 
         self._drift(self.clouds, move * 0.16, 8, len(CLOUDS))
+        self._drift_rivals(move * 0.13)
         self._drift(self.stars, move * 0.04, 2, None)
 
         if self.collides():
             self.dead = True
             self.say(DEATH_QUIPS, 0.0)
+
+    def _drift_rivals(self, move):
+        """One rival logo floats past now and then, well clear of the ground."""
+        tallest = max(len(to_cells(px)) for px, _ in SKY_LOGOS)
+        for item in self.rivals:
+            item[0] -= move
+            if item[0] < -16:
+                item[0] = self.w + self.rng.randrange(20, 90)
+                item[2] = self.rng.randrange(len(SKY_LOGOS))
+                top = max(HUD_H + 1, self.ground_y - 7 - tallest)
+                item[1] = self.rng.randrange(HUD_H + 1, max(HUD_H + 2, top + 1))
 
     def _drift(self, layer, move, pad, variants):
         sky = max(HUD_H + 1, self.ground_y - (6 if variants else 7))
@@ -417,32 +537,65 @@ def hud(grid, g, status):
     left = "%05d" % int(g.score)
     if status.get("best"):
         left += "  best %05d" % status["best"]
-    wasted = status.get("wasted")
-    if wasted is not None and width >= 74:
-        left += "   %s wasted" % human(wasted)
-    blit(grid, [left[:width - 2]], 1, 0, C_HUD)
 
-    label = status.get("claude")
+    # Drop the right-hand label to its short form, then the token counter, but
+    # only when they would actually collide. A fixed width threshold hid the
+    # counter on every 80-column terminal, because the track is 4 cells
+    # narrower than the window.
+    label = status.get("claude") or ""
+    wasted = status.get("wasted")
+    counter = "   Tokens wasted %s" % human(wasted) if wasted is not None else ""
+    if len(left) + len(counter) + len(label) + 4 > width:
+        label = label.replace("claude: ", "")
+    if len(left) + len(counter) + len(label) + 4 > width:
+        counter = ""
+    left += counter
+    blit(grid, [left[:width - 2]], 1, 0, C_HUD)
     if label:
-        if len(left) + len(label) + 4 > width:
-            label = label.replace("claude: ", "")
         blit(grid, [label[:width - 2]], max(1, width - len(label) - 1), 0, C_ACCENT)
 
     # One line per live session: marker, folder, and the tool it last called.
-    rows = status.get("sessions") or []
+    # Only sessions you might act on. Idle ones are not listed and not
+    # counted, so the summary above always matches the rows below it.
+    rows = [r for r in (status.get("sessions") or [])
+            if r["state"] in ("working", "ready")]
     if not rows or width < 52:
         return
     shown = rows[:PANEL_ROWS]
-    name_w = min(16, max(len(r["short"]) for r in shown))
-    lines = ["%s %-*s %s" % (STATE_MARK.get(r["state"], "?"), name_w,
-                             r["short"][:name_w], r["tool"])
-             for r in shown]
+    name_w = min(16, max(len(r["name"]) for r in shown))
+    tag_w = max([len(r["tag"]) for r in shown] + [0])
+    lines = []
+    for r in shown:
+        parts = [STATE_MARK.get(r["state"], "?"), "%-*s" % (name_w, r["name"][:name_w])]
+        if tag_w:
+            parts.append("%-*s" % (tag_w, r["tag"]))
+        parts.append(r["tool"])
+        lines.append(" ".join(parts).rstrip())
+    extra = len(rows) - len(shown)
+    if extra:
+        lines.append("  +%d more" % extra)
     panel_w = max(len(l) for l in lines)
     x = max(1, width - panel_w - 1)
     for i, line in enumerate(lines):
+        colour = C_SESSION if (i < len(shown)
+                               and shown[i]["state"] == "working") else C_HUD
         blit(grid, ["\0" * (panel_w + 1)], x - 1, 1 + i, C_DEF)
-        blit(grid, [line], x, 1 + i,
-             C_SESSION if shown[i]["state"] == "working" else C_HUD)
+        blit(grid, [line], x, 1 + i, colour)
+
+
+def menu(grid, status):
+    """Pick a difficulty. Three rows, one marker, no instructions to read."""
+    bests = status.get("bests") or {}
+    chosen = status.get("choice", DEFAULT_DIFFICULTY)
+    lines = ["C L A U D I N O", ""]
+    for level in DIFFICULTY_ORDER:
+        best = bests.get(level, 0)
+        lines.append("%s %-7s %s" % (">" if level == chosen else " ", level,
+                                     ("best %05d" % best) if best else ""))
+    lines += ["", "up down to choose, space to run"]
+    centred(grid, [l.rstrip() or " " for l in lines], C_ACCENT, -2)
+    # Re-colour everything but the chosen row so the marker reads at a glance.
+    return lines
 
 
 def say(grid, text, x, y):
@@ -459,6 +612,9 @@ def render(g, status):
 
     for sx, sy, ch in g.stars:
         blit(grid, [ch], int(sx), sy, C_STAR)
+    for rx, ry, which in g.rivals:
+        art, colour = SKY_LOGO_CELLS[which]
+        blit(grid, art, int(rx), ry, colour)
     for cx, cy, variant in g.clouds:
         blit(grid, CLOUDS[variant], int(cx), cy, C_CLOUD)
 
@@ -469,7 +625,7 @@ def render(g, status):
          0, g.ground_y + 2, C_GROUND)
 
     for ob in g.obstacles:
-        blit(grid, ob.rows, int(round(ob.x)), g.obstacle_top(ob), C_OBS)
+        blit(grid, ob.rows, int(round(ob.x)), g.obstacle_top(ob), ob.colour)
     blit(grid, g.dino_rows(), DINO_X, g.dino_top(), C_DINO)
 
     hud(grid, g, status)
@@ -478,10 +634,10 @@ def render(g, status):
         say(grid, g.quip, DINO_X + 2, max(HUD_H + 1, g.dino_top() - 2))
 
     if g.dead:
-        centred(grid, ["G A M E   O V E R", "", g.quip or "", "", "space to retry"],
-                C_ACCENT, -1)
+        centred(grid, ["G A M E   O V E R", "", g.quip or "",
+                       "", "space to retry, d for difficulty"], C_ACCENT, -1)
     elif not g.started:
-        centred(grid, ["press space"], C_HUD, -3)
+        menu(grid, status)
     elif g.flash > 0 and g.banner:
         centred(grid, g.banner, C_ACCENT, -4)
     return grid
@@ -576,9 +732,9 @@ class Sessions:
             duplicated = counts[row["name"]] > 1
             row["label"] = (row["name"] if not duplicated
                             else "%s (%s)" % (row["name"], row["id"]))
-            # The panel is narrow, so it gets a shorter form of the same idea.
-            row["short"] = (row["name"] if not duplicated
-                            else "%s~%s" % (row["name"][:10], row["id"][:4]))
+            # The panel keeps the folder name whole and puts the id in its own
+            # column. Squeezing both into one field cut the name mid-word.
+            row["tag"] = row["id"][:4] if duplicated else ""
         return rows
 
     @staticmethod
@@ -638,12 +794,15 @@ class Sessions:
 
 
 class TokenMeter:
-    """Adds up every token Claude has ever spent, across all sessions.
+    """Adds up the tokens spent by the sessions that are currently alive.
 
-    The logs are hundreds of megabytes, and a full pass takes about a second,
-    so this runs on a background thread and remembers how far into each file
-    it got. Later sweeps only read what was appended since.
+    Counting every log ever written gives a big number, but a meaningless
+    one: most of it belongs to work finished days ago. This counts only the
+    sessions Sessions() considers live, and drops a session's total back out
+    when it goes quiet.
 
+    Even so it is ~185 MB of log, so it runs on a background thread that
+    remembers a byte offset per file and re-reads only what was appended.
     It reads one field, `message.usage`, and nothing else.
     """
 
@@ -652,12 +811,16 @@ class TokenMeter:
     SWEEP = 4.0
 
     def __init__(self):
-        self.total = 0
-        self.baseline = None        # total when the game started
         self.ready = False
-        self._offsets = {}
+        self._files = {}            # path -> [bytes read, tokens counted]
+        self._total = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
+
+    @property
+    def total(self):
+        with self._lock:
+            return self._total
 
     def start(self):
         threading.Thread(target=self._loop, daemon=True).start()
@@ -674,42 +837,47 @@ class TokenMeter:
             if self._stop.wait(self.SWEEP):
                 return
 
-    def _sweep(self):
+    def _count(self, path, start):
+        """Tokens in the bytes after `start`, and how far we actually got."""
         added = 0
+        consumed = start
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            for raw in fh:              # line by line, so a 50 MB file is fine
+                if not raw.endswith(b"\n"):
+                    break               # half-written: pick it up next sweep
+                consumed += len(raw)
+                if b'"usage"' not in raw:
+                    continue
+                try:
+                    record = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                usage = (record.get("message") or {}).get("usage") or {}
+                added += sum(usage.get(k) or 0 for k in self.FIELDS)
+        return added, consumed
+
+    def _sweep(self):
+        now = time.time()
+        live = set()
         for path in glob.glob(os.path.join(Sessions.ROOT, "*", "*.jsonl")):
             try:
-                size = os.path.getsize(path)
-                start = self._offsets.get(path, 0)
-                if size <= start:
+                if now - os.path.getmtime(path) > Sessions.RECENT:
                     continue
-                with open(path, "rb") as fh:
-                    fh.seek(start)
-                    consumed = start
-                    for raw in fh:          # by line, so a 50 MB file is fine
-                        if not raw.endswith(b"\n"):
-                            break           # a half-written line: read it next time
-                        consumed += len(raw)
-                        if b'"usage"' not in raw:
-                            continue
-                        try:
-                            record = json.loads(raw.decode("utf-8", "replace"))
-                        except ValueError:
-                            continue
-                        usage = (record.get("message") or {}).get("usage") or {}
-                        added += sum(usage.get(k) or 0 for k in self.FIELDS)
-                self._offsets[path] = consumed
+                live.add(path)
+                seen, tokens = self._files.get(path, (0, 0))
+                if os.path.getsize(path) <= seen:
+                    continue
+                added, consumed = self._count(path, seen)
+                self._files[path] = (consumed, tokens + added)
             except OSError:
                 continue
+        for path in list(self._files):      # a session went quiet: drop it
+            if path not in live:
+                del self._files[path]
         with self._lock:
-            self.total += added
-            if self.baseline is None:
-                self.baseline = self.total   # first sweep is all of history
-                self.ready = True
-
-    def burned(self):
-        """Tokens spent since the game started."""
-        with self._lock:
-            return 0 if self.baseline is None else self.total - self.baseline
+            self._total = sum(tokens for _, tokens in self._files.values())
+            self.ready = True
 
 
 def human(value):
@@ -726,20 +894,32 @@ def score_path():
     return os.path.join(base, "claudino", "highscore.json")
 
 
-def load_best():
+def load_bests():
+    """Best score per difficulty. Comparing them across levels is meaningless."""
+    bests = dict.fromkeys(DIFFICULTY_ORDER, 0)
     try:
         with open(score_path()) as fh:
-            return int(json.load(fh).get("best", 0))
-    except (OSError, ValueError, TypeError):
-        return 0
+            stored = json.load(fh)
+    except (OSError, ValueError):
+        return bests
+    if isinstance(stored, dict):
+        # Older versions kept a single {"best": n}: that was normal difficulty.
+        if "best" in stored and not any(k in stored for k in DIFFICULTY_ORDER):
+            bests[DEFAULT_DIFFICULTY] = int(stored.get("best") or 0)
+        for level in DIFFICULTY_ORDER:
+            try:
+                bests[level] = int(stored.get(level) or bests[level])
+            except (TypeError, ValueError):
+                pass
+    return bests
 
 
-def save_best(best):
+def save_bests(bests):
     try:
         path = score_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as fh:
-            json.dump({"best": int(best)}, fh)
+            json.dump({k: int(v) for k, v in bests.items()}, fh)
     except OSError:
         pass
 
@@ -752,6 +932,7 @@ PALETTE_256 = {
     C_DINO: (173, 0), C_OBS: (78, 0), C_GROUND: (137, 0),
     C_CLOUD: (67, 0), C_HUD: (145, 0), C_ACCENT: (212, curses.A_BOLD),
     C_STAR: (240, 0), C_FRAME: (238, 0), C_SESSION: (108, 0),
+    C_RIVAL_A: (252, 0), C_RIVAL_B: (69, 0),
 }
 PALETTE_8 = {
     C_DINO: (curses.COLOR_YELLOW, curses.A_BOLD),
@@ -763,6 +944,8 @@ PALETTE_8 = {
     C_STAR: (curses.COLOR_WHITE, curses.A_DIM),
     C_FRAME: (curses.COLOR_WHITE, curses.A_DIM),
     C_SESSION: (curses.COLOR_GREEN, 0),
+    C_RIVAL_A: (curses.COLOR_WHITE, curses.A_BOLD),
+    C_RIVAL_B: (curses.COLOR_BLUE, curses.A_BOLD),
 }
 JUMP_KEYS = (ord(" "), curses.KEY_UP, ord("w"), ord("k"), ord("\n"))
 QUIT_KEYS = (ord("q"), 27)
@@ -831,13 +1014,14 @@ def run(stdscr, args):
     attrs = build_attrs()
 
     h, w = stdscr.getmaxyx()
-    game = Game(w - 4, h - 4)
+    bests = load_bests()
+    choice = args.difficulty or DEFAULT_DIFFICULTY
+    game = Game(w - 4, h - 4, difficulty=choice)
     watch = Sessions() if (not args.no_watch and Sessions.available()) else None
     meter = None
     if watch:
         meter = TokenMeter()
         meter.start()
-    best = load_best()
     last = time.monotonic()
 
     while True:
@@ -850,18 +1034,32 @@ def run(stdscr, args):
             if key == -1:
                 break
             if key in QUIT_KEYS:
-                save_best(max(best, int(game.score)))
+                bests[choice] = max(bests[choice], int(game.score))
+                save_bests(bests)
                 if meter:
                     meter.stop()
                 return
-            if key in JUMP_KEYS:
+            if not game.started and key in (curses.KEY_UP, ord("k"),
+                                            curses.KEY_DOWN, ord("j")):
+                step = -1 if key in (curses.KEY_UP, ord("k")) else 1
+                i = (DIFFICULTY_ORDER.index(choice) + step) % len(DIFFICULTY_ORDER)
+                choice = DIFFICULTY_ORDER[i]
+                game.set_difficulty(choice)
+            elif not game.started and key in (ord("1"), ord("2"), ord("3")):
+                choice = DIFFICULTY_ORDER[key - ord("1")]
+                game.set_difficulty(choice)
+            elif key in JUMP_KEYS:
                 if game.dead:
-                    best = max(best, int(game.score))
-                    save_best(best)
+                    bests[choice] = max(bests[choice], int(game.score))
+                    save_bests(bests)
                     game.reset()
                     game.started = True
                 else:
                     game.jump()
+            elif game.dead and key in (ord("d"), ord("m")):
+                bests[choice] = max(bests[choice], int(game.score))
+                save_bests(bests)
+                game.reset()          # back to the menu
             elif key == curses.KEY_RESIZE:
                 h, w = stdscr.getmaxyx()
                 game.resize(w - 4, h - 4)
@@ -875,7 +1073,7 @@ def run(stdscr, args):
 
         game.step(dt)
         if game.dead:
-            best = max(best, int(game.score))
+            bests[choice] = max(bests[choice], int(game.score))
 
         nh, nw = stdscr.getmaxyx()
         if (nh, nw) != (h, w):
@@ -890,7 +1088,8 @@ def run(stdscr, args):
                 pass
             stdscr.refresh()
         else:
-            status = {"best": best,
+            status = {"best": bests[choice],
+                      "bests": bests, "choice": choice,
                       "claude": watch.label() if watch else None,
                       "sessions": watch.rows if watch else [],
                       "wasted": meter.total if meter and meter.ready else None}
@@ -903,7 +1102,8 @@ def run(stdscr, args):
 
 def demo(args):
     """Render one frame as plain text. Needs no terminal, used by the tests."""
-    game = Game(args.width, args.height, seed=args.seed)
+    game = Game(args.width, args.height, seed=args.seed,
+                difficulty=args.difficulty or DEFAULT_DIFFICULTY)
     game.started = True
     for i in range(args.frames):
         if i == args.jump_at:
@@ -956,14 +1156,19 @@ def doctor():
               % (play.w, play.h, play.max_speed))
     except OSError:
         print("pane            unknown (not a terminal)")
-    print("high score      %s (%d)" % (score_path(), load_best()))
-    print("jump            peak %.1f rows, %.2fs airborne"
-          % (JUMP_V ** 2 / (2 * GRAVITY), AIR_TIME))
+    print("high scores     %s" % score_path())
+    for level, value in load_bests().items():
+        print("  %-13s %d" % (level, value))
+    for name in DIFFICULTY_ORDER:
+        g = Game(80, 20, difficulty=name)
+        print("%-15s start %.0f, top %.0f cells/s, jump peak %.1f rows, %.2fs air"
+              % (name, g.base_speed, g.max_speed,
+                 g.jump_v ** 2 / (2 * g.gravity), g.air_time))
     if Sessions.available():
         meter = TokenMeter()
         started = time.time()
         meter._sweep()
-        print("tokens          %s spent across every session (%.1fs to add up)"
+        print("tokens          %s across the live sessions (%.1fs to add up)"
               % (human(meter.total), time.time() - started))
     print()
     print_sessions()
@@ -974,6 +1179,8 @@ def main():
     p.add_argument("--sessions", action="store_true",
                    help="list every recent Claude session and exit")
     p.add_argument("--doctor", action="store_true", help="check this terminal and exit")
+    p.add_argument("--difficulty", choices=DIFFICULTY_ORDER,
+                   help="skip the menu and start on this level")
     p.add_argument("--ascii", action="store_true",
                    help="pure ASCII sprites, for terminals set to treat\n                         ambiguous-width characters as double width")
     p.add_argument("--no-watch", action="store_true", help="do not read Claude's status")
